@@ -1,6 +1,7 @@
 import os
 import json
 import requests
+import google.generativeai as genai
 from dotenv import load_dotenv
 from telegram import (Update, InlineKeyboardButton, InlineKeyboardMarkup)
 from telegram.ext import (Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters)
@@ -9,6 +10,13 @@ from telegram.ext import (Application, CommandHandler, CallbackQueryHandler, Con
 load_dotenv("bot_1.env")
 BOT_TOKEN = os.getenv("BOT_TOKEN") or os.environ.get('BOT_TOKEN')
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.environ.get('GEMINI_API_KEY')
+
+# Configure Gemini AI
+if GEMINI_API_KEY:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+    except Exception as e:
+        print(f"Gemini configuration error: {e}")
 
 # Ensure users.json exists and has proper content
 def initialize_users_file():
@@ -28,14 +36,44 @@ def initialize_conversations_file():
         with open('conversations.json', 'w') as f:
             json.dump({}, f)
 
-# Gemini API integration
+# Gemini API integration using official library
 def chat_with_gemini(message, user_id):
-    """Send message to Gemini API and get response"""
+    """Send message to Gemini API and get response using official library"""
     if not GEMINI_API_KEY:
-        return "Error: Gemini API key not configured. Please contact the bot administrator."
+        return "❌ Gemini API key not configured. Please contact the bot administrator."
     
     try:
-        # Using Gemini API (you might need to adjust the endpoint based on the specific API)
+        # Try different available models
+        models_to_try = [
+            'gemini-1.5-flash',  # Most commonly available and fast
+            'gemini-1.5-pro',    # Higher quality
+            'gemini-pro',         # Original model
+        ]
+        
+        for model_name in models_to_try:
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(message)
+                
+                if response.text:
+                    return response.text
+                else:
+                    continue  # Try next model if no response
+                    
+            except Exception as model_error:
+                print(f"Model {model_name} failed: {model_error}")
+                continue  # Try next model
+        
+        # If all models failed, try the REST API as fallback
+        return chat_with_gemini_fallback(message)
+        
+    except Exception as e:
+        return f"❌ Error connecting to Gemini: {str(e)}"
+
+# Fallback REST API method
+def chat_with_gemini_fallback(message):
+    """Fallback method using REST API"""
+    try:
         url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         
         headers = {
@@ -54,20 +92,20 @@ def chat_with_gemini(message, user_id):
             ]
         }
         
-        response = requests.post(url, headers=headers, json=data)
+        response = requests.post(url, headers=headers, json=data, timeout=30)
         response_data = response.json()
         
         if response.status_code == 200:
-            # Extract the response text from Gemini
             if 'candidates' in response_data and len(response_data['candidates']) > 0:
                 return response_data['candidates'][0]['content']['parts'][0]['text']
             else:
-                return "Sorry, I couldn't get a response from Gemini."
+                return "🤖 Sorry, I couldn't generate a response. Please try again."
         else:
-            return f"Error: {response_data.get('error', {}).get('message', 'Unknown error occurred')}"
+            error_msg = response_data.get('error', {}).get('message', 'Unknown error occurred')
+            return f"❌ API Error: {error_msg}"
             
     except Exception as e:
-        return f"Error connecting to Gemini: {str(e)}"
+        return f"❌ Connection Error: {str(e)}"
 
 # Track user conversation state
 def get_user_conversation(user_id):
@@ -136,7 +174,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🤖 AI Tools", callback_data="ai")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Welcome! Choose a section:", reply_markup=reply_markup)
+    
+    welcome_text = """
+🤖 **Welcome to AI Assistant Bot!**
+
+Choose from the options below to get started:
+
+• **Social Media Links** - Connect with us on various platforms
+• **AI Tools** - Access powerful AI assistants including Gemini
+
+Use /stop at any time to end ongoing conversations.
+    """
+    
+    await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode="Markdown")
 
 # Handle button clicks
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -151,19 +201,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🐦 X (Twitter)", url="https://x.com")],
             [InlineKeyboardButton("💼 LinkedIn", url="https://linkedin.com")],
             [InlineKeyboardButton("📸 Instagram", url="https://instagram.com")],
-            [InlineKeyboardButton("📞 WhatsApp", url="https://wa.me/")]
+            [InlineKeyboardButton("📞 WhatsApp", url="https://wa.me/")],
+            [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="start_main")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("Here are the social media links:", reply_markup=reply_markup)
+        await query.edit_message_text(
+            "🌐 **Social Media Links**\n\nConnect with us on these platforms:",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
 
     elif query.data == "ai":
         keyboard = [
             [InlineKeyboardButton("💡 ChatGPT", url="https://chat.openai.com/")],
             [InlineKeyboardButton("🧠 DeepSeek", url="https://chat.deepseek.com/")],
-            [InlineKeyboardButton("🔮 Gemini", callback_data="gemini_options")]
+            [InlineKeyboardButton("🔮 Gemini", callback_data="gemini_options")],
+            [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="start_main")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("Explore AI tools:", reply_markup=reply_markup)
+        await query.edit_message_text(
+            "🤖 **AI Tools**\n\nExplore these powerful AI assistants:",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
 
     elif query.data == "gemini_options":
         keyboard = [
@@ -172,7 +232,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 Back to AI Tools", callback_data="ai")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("Choose how you want to use Gemini:", reply_markup=reply_markup)
+        await query.edit_message_text(
+            "🔮 **Gemini AI Options**\n\nChoose how you want to use Google's Gemini AI:",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
 
     elif query.data == "gemini_chat":
         user_id = query.from_user.id
@@ -184,10 +248,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("❌ End Chat", callback_data="end_gemini_chat")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if not GEMINI_API_KEY:
+            await query.edit_message_text(
+                "❌ **Gemini API Not Configured**\n\n"
+                "The Gemini chat feature is currently unavailable. "
+                "Please contact the administrator to set up the API key.",
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
+            return
+        
         await query.edit_message_text(
             "🤖 **Gemini Chat Started!**\n\n"
-            "You can now chat with Gemini directly here. Send any message and I'll forward it to Gemini.\n\n"
-            "Type /stop to end the chat at any time.",
+            "You can now chat with Gemini AI directly here! ✨\n\n"
+            "**Features:**\n"
+            "• Ask questions on any topic\n"
+            "• Get help with writing and coding\n"
+            "• Have conversations in multiple languages\n\n"
+            "Type /stop or use the button below to end the chat.",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
@@ -201,8 +280,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
-            "✅ Gemini chat ended. Thank you for chatting!",
-            reply_markup=reply_markup
+            "✅ **Gemini chat ended!**\n\nThank you for chatting with Gemini AI!",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
         )
 
     elif query.data == "start_main":
@@ -214,7 +294,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🤖 AI Tools", callback_data="ai")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("Welcome! Choose a section:", reply_markup=reply_markup)
+        await query.edit_message_text(
+            "🤖 **Welcome back!**\n\nChoose a section to continue:",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
 
 # Handle regular messages for Gemini chat
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -251,8 +335,31 @@ async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     end_user_conversation(user_id)
     
     await update.message.reply_text(
-        "✅ Gemini chat ended. Use /start to explore other features."
+        "✅ **Gemini chat ended!**\n\nUse /start to explore other features.",
+        parse_mode="Markdown"
     )
+
+# Help command
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = """
+🤖 **Bot Help Guide**
+
+**Available Commands:**
+/start - Start the bot and show main menu
+/stop - End active Gemini chat
+/help - Show this help message
+
+**Features:**
+• Social Media Links - Connect on various platforms
+• AI Tools - Access different AI assistants
+• Gemini Chat - Chat directly with Google's Gemini AI
+
+**Tips:**
+• Use the inline buttons for navigation
+• Gemini can help with questions, writing, coding, and more
+• Long responses are automatically split into multiple messages
+    """
+    await update.message.reply_text(help_text, parse_mode="Markdown")
 
 # Health check endpoint for Render
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -283,20 +390,26 @@ def main():
     health_thread.start()
     
     if not BOT_TOKEN:
-        print("Error: BOT_TOKEN not found. Please set it in environment variables.")
+        print("❌ Error: BOT_TOKEN not found. Please set it in environment variables.")
         return
+    
+    # Check Gemini API key
+    if not GEMINI_API_KEY:
+        print("⚠️  Warning: GEMINI_API_KEY not found. Gemini features will not work.")
+    else:
+        print("✅ Gemini API key loaded successfully")
     
     app = Application.builder().token(BOT_TOKEN).build()
     
     # Add handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop_chat))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("Bot is running...")
+    print("🤖 Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
-
